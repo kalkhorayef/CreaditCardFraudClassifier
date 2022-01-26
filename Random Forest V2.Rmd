@@ -1,0 +1,198 @@
+---
+title: "Random Forest V2"
+author: "Khalid Alkhorayef - Group 30"
+date: "11/15/2020"
+output: html_document
+---
+---
+title: "credit card random forest"
+author: "Khalid Alkhorayef"
+date: "11/3/2020"
+output: html_document
+---
+## Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(ROSE)
+library(PRROC)
+cc<-read.csv("creditcard.csv")
+```
+
+```{r str}
+str(cc)
+```
+## Splitting the data
+```{r split}
+#For classification we need to transform the class attribute to factor to be able to utilise it for classification tasks
+cc$Class<-as.factor(cc$Class)
+set.seed(1)
+#Splitting the data 70% for Training
+inTrain<- createDataPartition(cc$Class,p=0.7)[[1]]
+cc.train<-cc[inTrain,]
+cc.test<-cc[-inTrain,]
+
+## use xtrain/ytrain instead of formula to use some functionality when we set keep.forest=True in the model
+xtrain<-cc.train[,-31]
+xtest<-cc.test[,-31]
+ytrain<-cc.train[,31]
+ytrain<-cc.train[,31]
+```
+## Random Forest Model
+```{r rf}
+#Random forest will reduce into bagging if all features are used at every split
+# Here we testing bagging by using random forest package and allowing the use of all features.
+library(randomForest) # also consider using ranger, much faster than randomForest
+set.seed(1)
+
+# Bagging for classification
+dim(cc.train)
+names(cc.train)
+starttime<-Sys.time()
+bag.cc <- randomForest(x=xtrain,y = ytrain , data = cc.train,keep.forest = T,
+                        importance = TRUE)
+
+print(bag.cc)
+bag.cc$importance
+endtime<-Sys.time()
+runtimerf=endtime-starttime
+runtimerf
+```
+### Understanding Feature Importance
+```{r ginifeatureimportance}
+# From the training sample's Mean Decrease Gini while training the RF to classify "Class" attribute, we can vizualize the resultant important features 
+dfgini<-data.frame(MeanDecreaseGini=bag.cc$importance[,4],Attributes=row.names(bag.cc$importance))
+dfacc<-data.frame(MeanDecreaseAccuracy =bag.cc$importance[,3],Attributes=row.names(bag.cc$importance))
+g<-ggplot(data=dfgini,aes(x=reorder(Attributes,-MeanDecreaseGini),y=MeanDecreaseGini))+ geom_bar(stat='identity')
+g+theme(axis.text=element_text(size=6,face="bold"),axis.title=element_text(size=14,face="bold"))+xlab('Attributes')
+acc<-ggplot(data=dfacc,aes(x=reorder(Attributes,-MeanDecreaseAccuracy),y=MeanDecreaseAccuracy))+ geom_bar(stat='identity')
+acc+theme(axis.text=element_text(size=6,face="bold"),axis.title=element_text(size=14,face="bold"))+xlab('Attributes')
+```
+``` {r bagimportance}
+varImpPlot(bag.cc)
+```
+We can note that V17,V12,V14,V10,V11,V16 are the attributes with the most information gain on average.
+and V14,V1,V17,V12,V10,V$ with the most mean decrease in accuracy when the attribute is excluded. 
+
+## Evaluation
+``` {r predict}
+
+pred.bag.cc.prob<-predict(bag.cc, newdata = cc.test,type = "prob") #prob to implement pr.curve/roc.curve
+
+pred.train.cc <- predict(bag.cc, newdata = cc.train,type = "class")
+pred.test.cc <- predict(bag.cc, newdata = cc.test,type = "class")
+## Below section used same method as applied by yuling in naive bayes implementation
+trainTable=table(cc.train$Class, pred.train.cc)
+testTable=table(cc.test$Class, pred.test.cc)
+trainRecall = (trainTable[2,2]/(trainTable[2,1] + trainTable[2,2]))
+testRecall = (testTable[2,2]/(testTable[2,1] + testTable[2,2]))
+message("Contingency Table for Training Data")
+print(trainTable)
+message("Contingency Table for Test Data")
+print(testTable)
+message("Recall Fraud")
+print(cbind(trainRecallRate=trainRecall, testRecallRate=testRecall))
+#commented below code since changing predict function to type probabilistic produced is not comparable at current output
+#accuracy.meas(cc.test$Class, pred.bag.cc)
+rc<-roc.curve(cc.test$Class, pred.bag.cc.prob,curve=TRUE)
+#Evaluating the model with all attributes included using the Area under the precision-recall curve also as it's 
+#best when there is a severe class imbalance in the dataset.
+
+fg_rf.bag<- pred.test.cc[cc.test$Class==0]
+bg_rf.bag<- pred.test.cc[cc.test$Class==1]
+
+
+pr<-pr.curve(scores.class0 = fg_rf.bag, scores.class1 = bg_rf.bag,curve=TRUE)
+rc
+plot(rc)
+pr
+plot(pr)
+
+```
+
+``` {r balancedundersampling}
+#balanced undersampling to 345 for both class cases as it is the maximum fraud cases can occur
+undersampled <- ovun.sample(Class ~ ., data = cc.train, method = "under", N = 345*2, seed = 1)$data
+table(undersampled$Class)
+```
+
+``` {r bothunderover}
+bothunderover <- ovun.sample(Class ~ ., data = cc.train, method = "both", p=0.5,N=5000, seed = 1)$data
+table(bothunderover$Class)
+```
+
+``` {r ROSE}
+rosesample <- ROSE(Class ~ ., data = cc.train,  seed = 1)$data
+table(rosesample$Class)
+## checking generated rose sample size if equal to original training set cc.train
+sum(table(rosesample$Class)[1],table(rosesample$Class)[2])
+nrow(cc.train)
+```
+
+``` {r modelrose}
+rosestarttime<-Sys.time()
+forest.rose<-randomForest(Class ~ . , data = rosesample,
+                        importance = TRUE,keep.forest=TRUE)
+roseendtime<-Sys.time()
+rosetime=roseendtime-rosestarttime
+rosetime
+```
+
+```{r modelboth}
+bothstarttime<-Sys.time()
+forest.both<-randomForest(Class ~ . , data = bothunderover,
+                        importance = TRUE)
+
+bothendtime<-Sys.time()
+bothtime=bothendtime-bothstarttime
+bothtime
+```
+
+```{r modelunder}
+understarttime<-Sys.time()
+forest.under<-randomForest(Class ~ . , data = undersampled,
+                        importance = TRUE)
+underendtime<-Sys.time()
+undertime=underendtime-understarttime
+undertime
+```
+
+``` {r CM}
+rose.pred.test.cc <- predict(forest.rose, newdata = cc.test,type = "class")
+under.pred.test.cc <- predict(forest.both, newdata = cc.test,type = "class")
+both.pred.test.cc <- predict(forest.under, newdata = cc.test,type = "class")
+rfCM<-confusionMatrix(pred.test.cc,cc.test$Class,positive = "1")
+roseCM<- confusionMatrix(rose.pred.test.cc,cc.test$Class,positive = "1")
+underCM<- confusionMatrix(under.pred.test.cc,cc.test$Class,positive = "1")
+bothCM<- confusionMatrix(both.pred.test.cc,cc.test$Class,positive = "1")
+print("Vanilla CM")
+rfCM
+print("Rose CM")
+roseCM
+print("Under CM")
+underCM
+print("Both Over-Under CM")
+bothCM
+```
+
+```{r prcurve}
+rose0<- rose.pred.test.cc[cc.test$Class==0]
+rose1<- rose.pred.test.cc[cc.test$Class==1]
+both0<- both.pred.test.cc[cc.test$Class==0]
+both1<- both.pred.test.cc[cc.test$Class==1]
+under0<- under.pred.test.cc[cc.test$Class==0]
+under1<- under.pred.test.cc[cc.test$Class==1]
+rosepr<-pr.curve(scores.class0 = rose0, scores.class1 = rose1,curve=TRUE)
+bothpr<-pr.curve(scores.class0 = both0, scores.class1 = both1,curve=TRUE)
+underpr<-pr.curve(scores.class0 = under0, scores.class1 = under1,curve=TRUE)
+
+```
+
+``` {r prplot}
+
+plot(rosepr,auc.main = TRUE,color = 1,legend = T,main = 'Rose')
+plot(underpr,auc.main = TRUE,add=F,color = 2,legend = T,main = 'Under Sampled')
+plot(bothpr,auc.main = TRUE,add=F,color = 3,legend = T,main = 'Both Over-Under Sampled')
+plot(pr,auc.main = TRUE,add=F,color = 4,legend = T,main = 'Vanilla RF')
+#plotting with whilst adding them in the same plot did not produced meaningful result because of how close they are 
+```
